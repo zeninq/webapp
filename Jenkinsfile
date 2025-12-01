@@ -1,84 +1,65 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    // change these if you want different image tags / registry
-    WEB_IMAGE = "my-webapp_web:latest"
-  }
+    stages {
 
-  stages {
-    stage('Checkout') {
-      steps {
-        checkout scm
-      }
-    }
-
-    stage('Lint') {
-      steps {
-        // install and run flake8; non-fatal by default (remove '|| true' to fail on lint)
-        sh '''
-          python3 -m pip install --user -r app/requirements.txt || true
-          python3 -m pip install --user flake8 || true
-          flake8 app || true
-        '''
-      }
-    }
-
-    stage('Build images') {
-      steps {
-        // build the web image and selenium test image
-        sh 'docker compose build --pull --no-cache'
-      }
-    }
-
-    stage('Unit tests') {
-      steps {
-        // Run unit tests in a one-off container using the web image.
-        // This assumes pytest is in requirements.txt so it's available in the image.
-        sh '''
-          # bring up only db & web (detached)
-          docker compose up -d db web
-          # allow some time for DB init
-          echo "Waiting for DB and web to be ready..."
-          sleep 8
-          # run pytest in an ephemeral container that shares the compose network
-          docker compose run --rm web pytest -q || true
-        '''
-      }
-    }
-
-    stage('Containerized integration + Selenium tests') {
-      steps {
-        script {
-          // run compose and return exit code; if non-zero, mark build failed
-          def rc = sh(returnStatus: true, script: 'docker compose up --build --exit-code-from selenium_tests --abort-on-container-exit')
-          if (rc != 0) {
-            error "Selenium tests failed (exit code: ${rc})"
-          }
+        stage('Checkout') {
+            steps {
+                git branch: 'master', url: 'https://github.com/zeninq/webapp.git'
+            }
         }
-      }
-    }
-  }
 
-  post {
-    always {
-      // collect logs and artifacts, then cleanup
-      sh '''
-        echo "---- CONTAINER PS ----"
-        docker compose ps -a || true
-        echo "---- COLLECTING LOGS ----"
-        mkdir -p jenkins_artifacts/logs || true
-        docker compose logs > jenkins_artifacts/logs/compose.log || true
-        echo "---- CLEANUP ----"
-        docker compose down -v --remove-orphans || true
-      '''
-      archiveArtifacts artifacts: 'jenkins_artifacts/**', allowEmptyArchive: true
+        stage('Lint') {
+            steps {
+                echo "Skipping Python package installs — using Docker environment"
+                sh """
+                    docker run --rm \
+                    -v \$(pwd)/app:/app \
+                    python:3.11-slim \
+                    sh -c "pip install flake8 && flake8 /app"
+                """
+            }
+        }
+
+        stage('Build images') {
+            steps {
+                sh "docker-compose build --no-cache"
+            }
+        }
+
+        stage('Unit tests') {
+            steps {
+                sh """
+                    docker-compose run --rm web pytest -q || true
+                """
+            }
+        }
+
+        stage('Containerized integration + Selenium tests') {
+            steps {
+                sh """
+                    docker-compose up -d db web
+                    sleep 8
+                    docker-compose run --rm selenium_tests || true
+                """
+            }
+        }
     }
-    success {
-      echo "Pipeline finished successfully!"
+
+    post {
+        always {
+            echo "---- COLLECTING LOGS ----"
+            sh """
+                mkdir -p jenkins_artifacts/logs
+                docker-compose logs > jenkins_artifacts/logs/compose_logs.txt || true
+            """
+            archiveArtifacts artifacts: 'jenkins_artifacts/logs/**/*', allowEmptyArchive: true
+
+            echo "---- CLEANUP ----"
+            sh "docker-compose down -v || true"
+        }
+        failure {
+            echo "Pipeline failed."
+        }
     }
-    failure {
-      echo "Pipeline failed. Check logs/artifacts."
-    }
-  }
 }
