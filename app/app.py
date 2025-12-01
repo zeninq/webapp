@@ -9,6 +9,7 @@ DB_USER = os.environ.get("DB_USER", "root")
 DB_PASS = os.environ.get("DB_PASS", "password")
 DB_NAME = os.environ.get("DB_NAME", "tododb")
 
+
 def get_conn():
     return pymysql.connect(
         host=DB_HOST,
@@ -17,7 +18,6 @@ def get_conn():
         db=DB_NAME,
         cursorclass=pymysql.cursors.DictCursor
     )
-
 
 
 @app.route("/")
